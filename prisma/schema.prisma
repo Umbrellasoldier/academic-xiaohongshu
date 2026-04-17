@@ -1,7 +1,5 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// Academic XiaoHongShu - Database Schema
+// Prisma v7 with PostgreSQL
 
 generator client {
   provider = "prisma-client"
@@ -10,4 +8,423 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ═══════════════════════════════════════════
+// USER SYSTEM
+// ═══════════════════════════════════════════
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?                     // Required by NextAuth adapter
+  username      String?   @unique
+  name          String?                       // NextAuth standard field
+  displayName   String?
+  passwordHash  String?
+  image         String?                       // NextAuth standard field (avatar URL)
+  avatar        String?                       // App-facing avatar (synced with image)
+  bio           String?
+  institution   String?
+  orcid         String?   @unique
+  role          UserRole  @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  posts        Post[]
+  comments     Comment[]
+  likes        Like[]
+  bookmarks    Bookmark[]
+  accounts     Account[]
+  sessions     Session[]
+  roomMembers  RoomMember[]
+  roomMessages RoomMessage[]
+
+  // Self-referential follow
+  following  Follow[] @relation("following")
+  followers  Follow[] @relation("followers")
+
+  // Notifications
+  notifications      Notification[] @relation("userNotifications")
+  actorNotifications Notification[] @relation("actorNotifications")
+
+  // New relations
+  commentLikes     CommentLike[]
+  roomJoinRequests RoomJoinRequest[]
+
+  @@index([username])
+  @@index([email])
+}
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("following", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("followers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+}
+
+enum UserRole {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+// NextAuth.js required models
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ═══════════════════════════════════════════
+// CONTENT SYSTEM
+// ═══════════════════════════════════════════
+
+model Post {
+  id            String     @id @default(cuid())
+  title         String
+  content       Json       // TipTap JSON document
+  summary       String?    // Plain text excerpt for cards
+  coverImage    String?
+  images        String[]
+  status        PostStatus @default(PUBLISHED)
+  viewCount     Int        @default(0)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Relations
+  authorId  String
+  author    User    @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id])
+  tags      PostTag[]
+  comments  Comment[]
+  likes     Like[]
+  bookmarks Bookmark[]
+  citations PostCitation[]
+
+  // AI-generated content
+  aiSummary     String?
+  aiTranslation Json?    // { [langCode]: translatedContent }
+
+  @@index([authorId])
+  @@index([subjectId])
+  @@index([createdAt(sort: Desc)])
+  @@index([viewCount(sort: Desc)])
+}
+
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Subject {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  nameZh   String                // Chinese name
+  slug     String    @unique
+  icon     String?
+  color    String                // Hex color for badges
+  parentId String?
+  parent   Subject?  @relation("SubjectHierarchy", fields: [parentId], references: [id])
+  children Subject[] @relation("SubjectHierarchy")
+  posts    Post[]
+  rooms    DiscussionRoom[]
+  sortOrder Int      @default(0)
+
+  @@index([slug])
+  @@index([parentId])
+}
+
+model Tag {
+  id    String    @id @default(cuid())
+  name  String    @unique
+  posts PostTag[]
+
+  @@index([name])
+}
+
+model PostTag {
+  postId String
+  tagId  String
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag    Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+}
+
+// ═══════════════════════════════════════════
+// INTERACTIONS
+// ═══════════════════════════════════════════
+
+model Comment {
+  id        String   @id @default(cuid())
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  postId   String
+  post     Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  // Threaded comments
+  parentId String?
+  parent   Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies  Comment[] @relation("CommentReplies")
+
+  // Comment likes
+  likes CommentLike[]
+
+  @@index([postId, createdAt])
+  @@index([parentId])
+}
+
+model Like {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  userId    String
+  postId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post      Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([postId])
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  userId    String
+  postId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post      Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, postId])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+// ═══════════════════════════════════════════
+// ACADEMIC PAPER SYSTEM
+// ═══════════════════════════════════════════
+
+model Paper {
+  id            String   @id @default(cuid())
+  doi           String?  @unique
+  arxivId       String?  @unique
+  title         String
+  authors       Json     // [{name, affiliation?, orcid?}]
+  abstract      String?  @db.Text
+  journal       String?
+  year          Int?
+  url           String?
+  pdfUrl        String?
+  metadata      Json?    // Full API response cached
+  citationCount Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  citations PostCitation[]
+
+  @@index([doi])
+  @@index([arxivId])
+  @@index([title])
+}
+
+model PostCitation {
+  id      String  @id @default(cuid())
+  postId  String
+  paperId String
+  context String? // Why this paper is cited
+  order   Int     @default(0)
+
+  post  Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  paper Paper @relation(fields: [paperId], references: [id])
+
+  @@unique([postId, paperId])
+  @@index([postId])
+  @@index([paperId])
+}
+
+// ═══════════════════════════════════════════
+// DISCUSSION ROOMS
+// ═══════════════════════════════════════════
+
+model DiscussionRoom {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  avatarUrl   String?
+  subjectId   String?
+  subject     Subject? @relation(fields: [subjectId], references: [id])
+  isPublic    Boolean  @default(true)
+  maxMembers  Int      @default(200)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members      RoomMember[]
+  messages     RoomMessage[]
+  joinRequests RoomJoinRequest[]
+
+  @@index([subjectId])
+  @@index([isPublic])
+}
+
+model RoomMember {
+  id           String    @id @default(cuid())
+  userId       String
+  roomId       String
+  role         RoomRole  @default(MEMBER)
+  joinedAt     DateTime  @default(now())
+  lastActiveAt DateTime?
+
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room DiscussionRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roomId])
+  @@index([roomId])
+}
+
+enum RoomRole {
+  MEMBER
+  MODERATOR
+  OWNER
+}
+
+model RoomMessage {
+  id        String      @id @default(cuid())
+  content   String      @db.Text
+  type      MessageType @default(TEXT)
+  createdAt DateTime    @default(now())
+
+  authorId String
+  author   User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  roomId   String
+  room     DiscussionRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  replyToId String?
+  replyTo   RoomMessage?  @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies   RoomMessage[] @relation("MessageReplies")
+
+  @@index([roomId, createdAt])
+}
+
+enum MessageType {
+  TEXT
+  PAPER_SHARE
+  IMAGE
+  SYSTEM
+}
+
+// ═══════════════════════════════════════════
+// NOTIFICATION SYSTEM
+// ═══════════════════════════════════════════
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  title     String
+  body      String
+  isRead    Boolean          @default(false)
+  link      String?
+  createdAt DateTime         @default(now())
+
+  // Recipient
+  userId String
+  user   User @relation("userNotifications", fields: [userId], references: [id], onDelete: Cascade)
+
+  // Actor (who triggered the notification, nullable for SYSTEM type)
+  actorId String?
+  actor   User?  @relation("actorNotifications", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+enum NotificationType {
+  COMMENT
+  LIKE
+  FOLLOW
+  ROOM_MESSAGE
+  SYSTEM
+}
+
+// ═══════════════════════════════════════════
+// COMMENT LIKES
+// ═══════════════════════════════════════════
+
+model CommentLike {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  userId    String
+  commentId String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment   Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, commentId])
+  @@index([commentId])
+}
+
+// ═══════════════════════════════════════════
+// ROOM JOIN REQUESTS (private rooms)
+// ═══════════════════════════════════════════
+
+model RoomJoinRequest {
+  id        String            @id @default(cuid())
+  userId    String
+  roomId    String
+  status    JoinRequestStatus @default(PENDING)
+  message   String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  room DiscussionRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roomId])
+  @@index([roomId, status])
+}
+
+enum JoinRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
